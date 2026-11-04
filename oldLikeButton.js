@@ -1,9 +1,9 @@
-// NAME: Old Like Button Revamped
-// AUTHOR: K4HVH, Maskowh, OhItsTom
-// DESCRIPTION: Adds a button to the tracklist to add/remove a song from Liked Songs.
-// Heavily inspired of https://github.com/ohitstom/spicetify-extensions/tree/main/quickQueue, especially for rendering
-// Modified: heart shows left of the "+"/tick on every track row (playlists, albums, artist pages, search, queue)
-// and in the now-playing bar; liked hearts are always visible, not just on hover / the playing row.
+// NAME: Old Like Button
+// DESCRIPTION: Adds the classic heart to the left of the "+"/tick on every track row (playlists, albums,
+// artist pages, search, queue) and in the now-playing bar. Liked hearts are always visible.
+// Inspired by and improved from: Old Like Button Revamped by K4HVH (https://github.com/K4HVH/spicetify-old-like-button-revamped),
+// itself based on work by Maskowh and OhItsTom. Original code MIT licensed: Copyright (c) 2026 K4HVH,
+// portions copyright (c) Maskowh, OhItsTom.
 
 // true = show empty hearts on every row all the time; false = empty hearts only on hover (like Spotify's "+").
 const SHOW_EMPTY_HEARTS_ALWAYS = false;
@@ -441,10 +441,60 @@ refreshLikedTracks();
             clearTimeout(showTooltipTimeout.current);
         }
 
+        const buttonRef = Spicetify.React.useRef(null);
+
+        // One shared tooltip element appended straight to <body> (plain DOM, no React
+        // portal), position: fixed at max z-index, so no panel or row can clip it.
+        Spicetify.React.useLayoutEffect(() => {
+            if (!showTooltip) return;
+            let tip = document.getElementById("oldlike-tooltip");
+            if (!tip) {
+                tip = document.createElement("div");
+                tip.id = "oldlike-tooltip";
+                tip.setAttribute("role", "tooltip");
+                document.body.appendChild(tip);
+            } else if (tip.parentElement !== document.body || tip !== document.body.lastElementChild) {
+                document.body.appendChild(tip); // keep it last so it paints on top
+            }
+            tip.textContent = isLiked ? "Remove from Liked Songs" : hasISRCLiked ? "Add to Liked Songs (you already like another version of this recording)" : "Add to Liked Songs";
+            tip.style.cssText = [
+                "position:fixed", "left:0", "top:0", "visibility:hidden", "display:block",
+                "padding:4px 8px", "border-radius:4px", "background:rgb(40,40,40)", "color:#fff",
+                "font-size:14px", "font-weight:400", "line-height:1.4",
+                "width:max-content", "max-width:min(520px, calc(100vw - 16px))", "white-space:normal",
+                "pointer-events:none", "z-index:2147483647",
+                "box-shadow:rgba(0,0,0,.3) 0 16px 24px 0, rgba(0,0,0,.2) 0 6px 8px 0",
+                "animation:oldLikeButtonTooltipIn 120ms ease-out"
+            ].join(";");
+
+            const btn = buttonRef.current;
+            if (btn) {
+                const b = btn.getBoundingClientRect(), t = tip.getBoundingClientRect();
+                const margin = 8;
+                const left = Math.min(Math.max(b.left + b.width / 2 - t.width / 2, margin), window.innerWidth - t.width - margin);
+                let top = b.top - t.height - 8;
+                if (top < margin) top = b.bottom + 8;
+                tip.style.left = left + "px";
+                tip.style.top = top + "px";
+                tip.style.visibility = "visible";
+            }
+
+            const hide = () => setShowTooltip(false);
+            window.addEventListener("scroll", hide, true);
+            window.addEventListener("resize", hide);
+            return () => {
+                tip.style.display = "none";
+                window.removeEventListener("scroll", hide, true);
+                window.removeEventListener("resize", hide);
+            };
+        }, [showTooltip, isLiked, hasISRCLiked]);
+
+
         const state = isLiked ? "liked" : hasISRCLiked ? "partial" : "none";
         return Spicetify.React.createElement(
             "button",
             {
+                ref: buttonRef,
                 className: "oldlike-btn",
                 "data-state": state,
                 "data-variant": variant || "row",
@@ -454,32 +504,6 @@ refreshLikedTracks();
                 onMouseOver: handleMouseOver,
                 onMouseOut: handleMouseOut
             },
-            showTooltip && Spicetify.React.createElement(
-                // Spicetify.Tippy no longer matches native styling; this copies the real one.
-                "div",
-                {
-                    role: "tooltip",
-                    style: {
-                        position: "absolute",
-                        bottom: "100%",
-                        left: "50%",
-                        transform: "translateX(-50%)",
-                        marginBottom: "8px",
-                        padding: "4px 8px",
-                        borderRadius: "4px",
-                        background: "rgb(40, 40, 40)",
-                        color: "#fff",
-                        fontSize: "14px",
-                        fontWeight: "400",
-                        whiteSpace: "nowrap",
-                        pointerEvents: "none",
-                        boxShadow: "rgba(0, 0, 0, 0.3) 0px 16px 24px 0px, rgba(0, 0, 0, 0.2) 0px 6px 8px 0px",
-                        animation: "oldLikeButtonTooltipIn 120ms ease-out",
-                        zIndex: 100
-                    }
-                },
-                isLiked ? "Remove from Liked Songs" : hasISRCLiked ? "Add to Liked Songs (you already like another version of this recording)" : "Add to Liked Songs"
-            ),
             Spicetify.React.createElement(
                 // Inline-sized instead of a hardcoded class name, which was 6px too tall.
                 "span",

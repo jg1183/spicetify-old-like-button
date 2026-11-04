@@ -11,6 +11,8 @@ const SHOW_EMPTY_HEARTS_ALWAYS = false;
 // old ID and Spotify stops showing it. Those leftovers are ignored (empty heart, like Spotify shows).
 // true = also delete the hidden leftover when you like the current copy, to tidy your Liked Songs.
 const REMOVE_LEFTOVER_LIKES_WHEN_LIKING = false;
+// Spotify already shows its own toast when you like/unlike; set true only if yours doesn't.
+const SHOW_OWN_TOASTS = false;
 
 let likedTrackUris = new Set();
 let likedIsrcByUri = new Map();
@@ -518,7 +520,8 @@ refreshLikedTracks();
                 ? likedMatches(liveUri, readIsrcCache(liveUri)).dups.map(d => d.uri)
                 : [];
 
-            Spicetify.showNotification(
+            // Spotify shows its own "Added to / Removed from Liked Songs" toast; ours would duplicate it.
+            if (SHOW_OWN_TOASTS) Spicetify.showNotification(
                 targetUris.length > 1
                     ? (liveIsLiked ? `Removed ${targetUris.length} songs from Liked Songs` : `Added ${targetUris.length} songs to Liked Songs`)
                     : (liveIsLiked ? "Removed from Liked Songs" : "Added to Liked Songs")

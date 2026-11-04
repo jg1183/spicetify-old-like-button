@@ -8,7 +8,7 @@
 // true = show empty hearts on every row all the time; false = empty hearts only on hover (like Spotify's "+").
 const SHOW_EMPTY_HEARTS_ALWAYS = false;
 // Leftover likes: when Spotify gives a song a new ID (e.g. album re-uploaded), your old like stays on the
-// old ID and Spotify stops showing it. Those leftovers are ignored (empty heart, like Spotify shows).
+// old ID and Spotify stops showing it. Those get an outline heart with an orange "!" (always visible).
 // true = also delete the hidden leftover when you like the current copy, to tidy your Liked Songs.
 const REMOVE_LEFTOVER_LIKES_WHEN_LIKING = false;
 // Spotify already shows its own toast when you like/unlike; set true only if yours doesn't.
@@ -706,7 +706,8 @@ refreshLikedTracks();
     // Puts the heart directly to the LEFT of the "+" / tick button.
     // Uses several selectors because Spotify keeps renaming its classes.
     function findPlaybarWidget() {
-        return document.querySelector('[data-testid="now-playing-widget"]')
+        return document.querySelector('[data-testid="now-playing-widget-v2"]')
+            || document.querySelector('[data-testid="now-playing-widget"]')
             || document.querySelector(".main-nowPlayingWidget-nowPlaying");
     }
 
@@ -714,12 +715,14 @@ refreshLikedTracks();
         const buttons = [...widget.querySelectorAll("button")].filter(b => !b.closest(".likeControl-wrapper"));
         const label = b => b.getAttribute("aria-label") || "";
         return buttons.find(b => /liked songs|playlist/i.test(label(b)))
+            || buttons.find(b => b.hasAttribute("aria-checked"))
             || buttons.find(b => b.getAttribute("data-encore-id") === "buttonTertiary" && !/video/i.test(label(b)))
             || null;
     }
 
     let currentPlaybarContainer = null;
     let currentPlaybarUri = null;
+    let playbarFallbackLogged = false;
     const getPlayingUri = () => Spicetify.Player.data?.item?.uri || "";
 
     function ensurePlaybarButton() {
@@ -729,7 +732,8 @@ refreshLikedTracks();
         const uri = getPlayingUri();
 
         // No tick, or a podcast/ad: take the heart away.
-        if (!tick || !/^spotify:(track|local):/.test(uri)) {
+        // Podcast/ad: no heart.
+        if (!/^spotify:(track|local):/.test(uri)) {
             if (currentPlaybarContainer?.isConnected) currentPlaybarContainer.remove();
             return;
         }
@@ -738,8 +742,19 @@ refreshLikedTracks();
             currentPlaybarContainer = document.createElement("div");
             currentPlaybarContainer.className = "likeControl-wrapper oldlike-playbar";
         }
-        if (currentPlaybarContainer.nextElementSibling !== tick) {
-            tick.parentNode.insertBefore(currentPlaybarContainer, tick);
+        if (tick) {
+            // Normal case: heart directly left of the "+" / tick.
+            if (currentPlaybarContainer.nextElementSibling !== tick) {
+                tick.parentNode.insertBefore(currentPlaybarContainer, tick);
+            }
+        } else if (currentPlaybarContainer.parentElement !== widget || widget.lastElementChild !== currentPlaybarContainer) {
+            // No tick found in this Spotify version: put the heart at the end of the widget instead.
+            if (!playbarFallbackLogged) {
+                playbarFallbackLogged = true;
+                console.warn("[Old Like Button] No +/tick button found in the now-playing widget; placing the heart at its end.",
+                    [...widget.querySelectorAll("button")].map(b => b.getAttribute("aria-label")));
+            }
+            widget.appendChild(currentPlaybarContainer);
         }
         if (currentPlaybarUri !== uri) {
             currentPlaybarUri = uri;

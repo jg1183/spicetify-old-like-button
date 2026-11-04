@@ -1,0 +1,14 @@
+{
+    "name": "Old Like Button",
+    "description": "The classic heart, left of the +/tick on every track list and in the now-playing bar. Shows liked songs at a glance, other liked versions of the same recording, and likes hidden by Spotify ID changes.",
+    "preview": "preview.png",
+    "main": "oldLikeButton.js",
+    "readme": "README.md",
+    "authors": [
+        { "name": "YOUR-GITHUB-USERNAME", "url": "https://github.com/YOUR-GITHUB-USERNAME" },
+        { "name": "K4HVH", "url": "https://github.com/K4HVH" },
+        { "name": "Maskowh", "url": "https://github.com/Maskowh" },
+        { "name": "OhItsTom", "url": "https://github.com/ohitstom" }
+    ],
+    "tags": ["like", "heart", "liked songs", "songs", "utility"]
+}

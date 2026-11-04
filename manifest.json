@@ -5,7 +5,7 @@
     "main": "oldLikeButton.js",
     "readme": "README.md",
     "authors": [
-        { "name": "JackG", "url": "https://github.com/JG1183" },
+        { "name": "JackG", "url": "https://github.com/JG1183" }
     ],
     "tags": ["like", "heart", "liked songs", "songs", "utility"]
 }

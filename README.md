@@ -39,7 +39,6 @@ Open `oldLikeButton.js` and change these values at the top, then run `spicetify 
 | --- | --- | --- |
 | `SHOW_EMPTY_HEARTS_ALWAYS` | `false` | `true` shows empty hearts on every row all the time. |
 | `REMOVE_LEFTOVER_LIKES_WHEN_LIKING` | `false` | `true` also deletes the hidden old copy when you re-like a song whose ID changed. |
-| `SHOW_OWN_TOASTS` | `false` | `true` shows the extension's own "Added to Liked Songs" message. Spotify already shows one. |
 
 ## Compatibility
 

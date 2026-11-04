@@ -42,7 +42,7 @@ Open `oldLikeButton.js` and change these values at the top, then run `spicetify 
 
 ## Compatibility
 
-Tested on Spotify 1.3.6 with Spicetify 2.xx.x. Spotify updates often rename parts of the app; if something stops working, please open an issue.
+Tested on Spotify 1.3.6 with Spicetify 2.46.4. Spotify updates often rename parts of the app; if something stops working, please open an issue.
 
 ## Troubleshooting
 

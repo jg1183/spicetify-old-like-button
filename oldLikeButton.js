@@ -420,9 +420,10 @@ refreshLikedTracks();
                 background:none;border:0;padding:0;margin:0 16px 0 0;min-width:16px;height:16px;cursor:pointer;opacity:1;visibility:visible}
             .oldlike-btn:hover svg{filter:brightness(1.4)}
             .oldlike-btn[data-variant="playbar"]{margin:0 8px 0 0}
+            .oldlike-btn[data-variant="compact"]{margin:0 8px 0 0}
             .oldlike-playbar{display:flex;align-items:center}
             ${SHOW_EMPTY_HEARTS_ALWAYS ? "" : `
-            .oldlike-btn[data-variant="row"][data-state="none"]{opacity:0}
+            .oldlike-btn[data-variant="row"][data-state="none"],.oldlike-btn[data-variant="compact"][data-state="none"]{opacity:0}
             [role="row"]:hover .oldlike-btn,[role="row"]:focus-within .oldlike-btn,[role="row"][aria-selected="true"] .oldlike-btn{opacity:1}`}
         `;
         document.head.appendChild(style);
@@ -882,16 +883,52 @@ refreshLikedTracks();
                 const uri = findUriFromFiber(row);
                 if (!uri) return;
 
-                const cells = row.querySelectorAll('[role="gridcell"]');
-                const cell = cells[cells.length - 1] || row.firstElementChild?.lastElementChild;
-                if (!cell) return;
+                const removeStray = scope => {
+                    scope?.querySelectorAll(".likeControl-wrapper").forEach(stray => {
+                        try { Spicetify.ReactDOM.unmountComponentAtNode(stray); } catch { }
+                        stray.remove();
+                    });
+                };
 
-                let wrapper = cell.querySelector(":scope > .likeControl-wrapper");
+                // Where the heart goes: a container, the node to insert before, and a style variant.
+                let container = null, before = null, variant = "row";
+
+                const listRow = row.querySelector('[data-encore-id="listRow"]');
+                if (listRow) {
+                    // Compact list rows (the queue, side panels): put the heart in the right-hand
+                    // slot, just left of the "..." button, so the title/artist text isn't pushed around.
+                    const slot = listRow.querySelector('[class*="list-row__slot"]');
+                    // The "..." button: any button in the slot that isn't our own heart.
+                    const moreButton = slot ? [...slot.querySelectorAll("button")].find(btn => !btn.closest(".likeControl-wrapper")) : null;
+                    // Clean up hearts an older version put next to the title.
+                    [...listRow.querySelectorAll(".likeControl-wrapper")].filter(w => !slot?.contains(w)).forEach(w => {
+                        try { Spicetify.ReactDOM.unmountComponentAtNode(w); } catch { }
+                        w.remove();
+                    });
+                    if (!slot || !moreButton) return;
+                    container = moreButton.parentElement;
+                    before = moreButton;
+                    variant = "compact";
+                } else {
+                    const cells = row.querySelectorAll('[role="gridcell"]');
+                    const cell = cells[cells.length - 1] || row.firstElementChild?.lastElementChild;
+                    if (!cell) return;
+                    // Other rows without a separate actions column: the last cell holds the
+                    // cover/title/artist, and a heart there breaks its layout. Skip them.
+                    if (cells.length < 2 || cell.querySelector('a[href*="/track/"], a[href*="/artist/"], a[href*="/album/"], img')) {
+                        removeStray(cell);
+                        return;
+                    }
+                    container = cell;
+                    before = cell.firstChild;
+                }
+
+                let wrapper = container.querySelector(":scope > .likeControl-wrapper");
                 if (!wrapper) {
                     wrapper = document.createElement("div");
                     wrapper.className = "likeControl-wrapper";
                     wrapper.style.display = "contents";
-                    cell.insertBefore(wrapper, cell.firstChild);
+                    container.insertBefore(wrapper, before);
                 }
                 if (wrapper.dataset.uri !== uri) {
                     wrapper.dataset.uri = uri;
@@ -901,7 +938,7 @@ refreshLikedTracks();
                             key: uri,
                             getUri: () => findUriFromFiber(row),
                             getSelection: () => getMultiSelection(row),
-                            variant: "row"
+                            variant
                         }),
                         wrapper
                     );

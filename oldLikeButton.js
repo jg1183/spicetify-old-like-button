@@ -422,6 +422,8 @@ refreshLikedTracks();
             .oldlike-btn:hover svg{filter:brightness(1.4)}
             .oldlike-btn[data-variant="playbar"]{margin:0 8px 0 0}
             .oldlike-btn[data-variant="compact"]{margin:0 8px 0 0}
+            .oldlike-btn[data-variant="inline"]{margin:0 12px 0 0}
+            .oldlike-inline{display:flex;align-items:center;flex-shrink:0}
             .oldlike-playbar{display:flex;align-items:center}
             ${SHOW_EMPTY_HEARTS_ALWAYS ? "" : `
             .oldlike-btn[data-variant="row"][data-state="none"],.oldlike-btn[data-variant="compact"][data-state="none"]{opacity:0}
@@ -966,6 +968,63 @@ refreshLikedTracks();
         });
     }
 
+    // Anywhere else Spotify shows its own "+" / tick for a song (search top result, search
+    // results list, search suggestions, ...): put the heart directly to its left.
+    function isCurationButton(btn) {
+        if (btn.closest(".likeControl-wrapper")) return false; // our own heart
+        const label = btn.getAttribute("aria-label") || "";
+        return /liked songs|add to playlist/i.test(label);
+    }
+
+    function ensureInlineButtons() {
+        const playbar = findPlaybarWidget();
+        document.querySelectorAll("button[aria-label]").forEach(btn => {
+            try {
+                if (!isCurationButton(btn) || playbar?.contains(btn) || !btn.getClientRects().length) return;
+                // Rows the main logic already handles (track lists, queue) have their heart already.
+                const rowLike = btn.closest('[role="row"], [data-encore-id="listRow"]');
+                if (rowLike && [...rowLike.querySelectorAll(".oldlike-btn")].some(h => !h.closest(".oldlike-inline"))) return;
+
+                const uri = findUriFromFiber(btn, 25);
+                if (!uri) return;
+
+                // Sit left of the button's own box (Spotify often wraps it in a single-child div).
+                let target = btn;
+                for (let i = 0; i < 2 && target.parentElement && target.parentElement.childElementCount === 1
+                    && !target.parentElement.matches('[role="row"], [role="option"], li'); i++) {
+                    target = target.parentElement;
+                }
+                let wrapper = target.previousElementSibling;
+                if (!wrapper?.classList?.contains("oldlike-inline")) {
+                    wrapper = document.createElement("div");
+                    wrapper.className = "likeControl-wrapper oldlike-inline";
+                    // Keep clicks on the heart from also triggering the row/suggestion underneath.
+                    ["click", "mousedown", "pointerdown", "mouseup", "pointerup", "dblclick"].forEach(type =>
+                        wrapper.addEventListener(type, e => e.stopPropagation()));
+                    target.parentElement.insertBefore(wrapper, target);
+                }
+                if (wrapper.dataset.uri !== uri) {
+                    wrapper.dataset.uri = uri;
+                    Spicetify.ReactDOM.render(
+                        Spicetify.React.createElement(LikeButton, { uri, key: uri, getUri: () => findUriFromFiber(btn, 25) || uri, variant: "inline" }),
+                        wrapper
+                    );
+                }
+            } catch (error) {
+                console.error("[Old Like Button] Failed to attach a heart next to a +/tick button", error);
+            }
+        });
+        // Remove inline hearts whose "+" / tick has gone away.
+        document.querySelectorAll(".oldlike-inline").forEach(w => {
+            const next = w.nextElementSibling;
+            const stillThere = next && (next.matches("button") ? isCurationButton(next) : [...next.querySelectorAll("button[aria-label]")].some(isCurationButton));
+            if (!stillThere) {
+                try { Spicetify.ReactDOM.unmountComponentAtNode(w); } catch { }
+                w.remove();
+            }
+        });
+    }
+
     let scanQueued = false;
     function queueScan() {
         if (scanQueued) return;
@@ -973,6 +1032,7 @@ refreshLikedTracks();
         requestAnimationFrame(() => {
             scanQueued = false;
             ensureRowButtons();
+            try { ensureInlineButtons(); } catch (error) { console.error("[Old Like Button] Inline hearts failed", error); }
             try { ensurePlaybarButton(); } catch (error) { console.error("[Old Like Button Revamped] Playbar button failed", error); }
         });
     }

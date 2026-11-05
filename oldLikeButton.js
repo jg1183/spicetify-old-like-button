@@ -7,11 +7,13 @@
 
 // true = show empty hearts on every row all the time; false = empty hearts only on hover (like Spotify's "+").
 const SHOW_EMPTY_HEARTS_ALWAYS = false;
-// Other copies: Spotify often has the same album under several IDs (re-releases, regional copies).
-// If you liked the song from a different copy than the one you're looking at, Spotify shows it as not
-// liked; the heart shows an outline with an orange "!" instead (always visible).
-// true = when you like this copy, unlike the other copy, so each song is only liked once.
+// Other copies: Spotify often has the same album under several IDs (re-releases, deluxe editions,
+// regional copies). If you liked the song from a different copy, this copy shows a half-heart.
+// true = when you like this copy, unlike the other copies of the same album, so each song is liked once.
 const UNLIKE_OTHER_COPY_WHEN_LIKING = false;
+// Lost songs: liked songs Spotify no longer plays (pulled or region-blocked). An available copy of a
+// lost song gets an orange "!" heart. true = when you like that copy, also unlike the dead one.
+const UNLIKE_LOST_COPY_WHEN_LIKING = false;
 // Spotify already shows its own toast when you like/unlike; set true only if yours doesn't.
 const SHOW_OWN_TOASTS = false;
 
@@ -25,6 +27,7 @@ function trackInfoFromItem(item) {
     return {
         name: item?.name || "",
         artists: (item?.artists || []).map(a => a?.name).filter(Boolean).join(", "),
+        artist: item?.artists?.[0]?.name || "",
         album: item?.album?.name || "",
         albumUri: item?.album?.uri || ""
     };
@@ -44,8 +47,10 @@ function likedMatches(uri, isrc) {
     return { dups, others };
 }
 
+// Every other liked copy/version of this recording (same-album copies first).
 function otherLikedVersions(uri, isrc) {
-    return likedMatches(uri, isrc).others;
+    const { dups, others } = likedMatches(uri, isrc);
+    return [...dups, ...others];
 }
 
 function describeVersion(v) {
@@ -268,11 +273,13 @@ function readProtoStrings(bytes, wanted) {
     return out;
 }
 
+// Track.artist = field 4 (Artist.name = field 2); the first one is the main artist.
 function decodeTrackBasics(bytes) {
     const text = b => (b ? new TextDecoder().decode(b) : "");
-    const top = readProtoStrings(bytes, [2, 3]);
+    const top = readProtoStrings(bytes, [2, 3, 4]);
     const album = top[3] ? readProtoStrings(top[3], [2]) : {};
-    return { name: text(top[2]), album: text(album[2]) };
+    const artist = top[4] ? readProtoStrings(top[4], [2]) : {};
+    return { name: text(top[2]), album: text(album[2]), artist: text(artist[2]) };
 }
 
 const META_STORAGE_PREFIX = "oldlike-meta-v1-";
@@ -300,12 +307,79 @@ async function resolveTrackMeta(uri) {
 }
 
 const normText = s => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
+// Album names without edition tags, so "X", "X (Deluxe)", "X (Remastered 2011)" and
+// "X - Expanded Edition" count as the same album.
+const EDITION_WORDS = /deluxe|remaster|edition|expanded|anniversary|bonus|special|reissue|version|mono|stereo|collector|legacy|complete|super/i;
+function normAlbum(name) {
+    let a = normText(name);
+    for (let prev = null; prev !== a;) {
+        prev = a;
+        a = a.replace(/\s*[(\[]([^()\[\]]*)[)\]]\s*$/, (m, inner) => EDITION_WORDS.test(inner) ? "" : m)
+             .replace(/\s+[-\u2013\u2014]\s+([^-\u2013\u2014]*)$/, (m, tail) => EDITION_WORDS.test(tail) ? "" : m)
+             .trim();
+    }
+    return a;
+}
 // Same recording + same title + same album name = the same release under an old/other ID
 // (another copy of the same album), not a different version.
+// ---- Lost songs: liked, but Spotify no longer has/plays that copy ----
+// LibraryAPI.getTracks() silently drops them, so they're found by reading the Liked Songs
+// list directly and diffing it against getTracks().
+let lostLiked = new Map();      // uri -> { uri, name, artists, artist, album, albumUri }
+let lostByIsrc = new Map();     // isrc -> [lost]
+let lostByKey = new Map();      // "title|main artist" -> [lost]
+let lostCheckKey = "";          // Liked Songs count + saved count at the last full read
+const songKey = (name, artist) => name && artist ? normAlbum(name) + "|" + normText(artist) : "";
+
+async function fetchLostLikes(savedUris) {
+    const lib = Spicetify.Platform?.LibraryAPI, pl = Spicetify.Platform?.PlaylistAPI;
+    const likedUri = lib?._likedSongsUri;
+    if (!likedUri || !pl?.getContents) return null;
+    const head = await pl.getContents(likedUri, { offset: 0, limit: 1 });
+    const total = head?.totalLength ?? 0;
+    if (total <= savedUris.size) { lostCheckKey = ""; return new Map(); } // nothing missing: skip the full read
+    // Same counts as last time: the lost list hasn't changed, don't re-read all of Liked Songs.
+    const key = total + "|" + savedUris.size;
+    if (key === lostCheckKey) return lostLiked;
+    const lost = new Map();
+    for (let offset = 0; ;) {
+        const res = await pl.getContents(likedUri, { offset, limit: 500 });
+        const items = res?.items || [];
+        for (const i of items) {
+            if (!i?.uri?.startsWith("spotify:track:") || savedUris.has(i.uri)) continue;
+            const artists = (i.artists || []).map(a => a?.name).filter(Boolean);
+            lost.set(i.uri, { uri: i.uri, name: i.name || "", artists: artists.join(", "), artist: artists[0] || "",
+                album: i.album?.name || "", albumUri: i.album?.uri || "" });
+        }
+        offset += items.length;
+        if (!items.length || offset >= (res?.totalLength ?? 0)) break;
+    }
+    lostCheckKey = key;
+    return lost;
+}
+
+function indexLostLikes() {
+    lostByIsrc = new Map(); lostByKey = new Map();
+    const push = (map, k, v) => { if (!k) return; if (!map.has(k)) map.set(k, []); map.get(k).push(v); };
+    for (const lost of lostLiked.values()) {
+        push(lostByIsrc, readIsrcCache(lost.uri), lost);
+        push(lostByKey, songKey(lost.name, lost.artist), lost);
+    }
+}
+
+// Lost liked songs that this (available) copy could replace.
+function lostMatchesFor(uri, isrc, meta) {
+    if (!lostLiked.size || lostLiked.has(uri)) return [];
+    const found = new Map();
+    for (const l of (isrc && lostByIsrc.get(isrc)) || []) found.set(l.uri, l);
+    for (const l of (meta && lostByKey.get(songKey(meta.name, meta.artist))) || []) found.set(l.uri, l);
+    return [...found.values()];
+}
+
 function isSameRelease(meta, info) {
     return !!(meta && info && meta.name && info.name
         && normText(meta.name) === normText(info.name)
-        && normText(meta.album) === normText(info.album));
+        && normAlbum(meta.album) === normAlbum(info.album));
 }
 
 async function resolveIsrcs(uris, concurrency = 8) {
@@ -345,6 +419,10 @@ async function resolveIsrcs(uris, concurrency = 8) {
                     // the batch and the overall resolution still succeed.
                     continue;
                 }
+                try {
+                    const basics = decodeTrackBasics(entry.bytes);
+                    if (basics.name) writeMetaCache(entry.uri, basics);
+                } catch { }
                 if (!isrc) continue;
                 result.set(entry.uri, isrc);
                 writeIsrcCache(entry.uri, isrc);
@@ -375,12 +453,23 @@ async function refreshLikedTracks() {
         for (const uri of pendingLikeRemoves) {
             if (!snapshot.has(uri)) pendingLikeRemoves.delete(uri);
         }
+        try {
+            const lost = await fetchLostLikes(new Set(items.map(item => item.uri)));
+            if (lost) lostLiked = lost;
+        } catch (error) {
+            console.error("[Old Like Button] Failed to check for lost songs", error);
+        }
+        // Lost songs are still liked (their greyed-out rows get a full heart).
+        for (const uri of lostLiked.keys()) snapshot.add(uri);
         for (const uri of pendingLikeAdds.keys()) snapshot.add(uri);
         for (const uri of pendingLikeRemoves) snapshot.delete(uri);
         likedTrackUris = snapshot;
 
         const trackUris = [...likedTrackUris].filter(uri => uri.startsWith("spotify:track:"));
         const isrcByUri = await resolveIsrcs(trackUris);
+        indexLostLikes();
+        // Lost copies are handled by the "!" heart, not listed as "other copies/versions".
+        for (const uri of lostLiked.keys()) isrcByUri.delete(uri);
         for (const [uri, isrc] of pendingLikeAdds) {
             if (isrc && !isrcByUri.has(uri)) isrcByUri.set(uri, isrc);
         }
@@ -455,15 +544,18 @@ refreshLikedTracks();
         const showTooltipTimeout = Spicetify.React.useRef(null);
         const [, setMetaTick] = Spicetify.React.useState(0);
 
-        // Liked from another copy of the same album -> "!" heart; genuinely different versions -> half-heart.
         const matches = (!isLiked && hasISRCLiked) ? likedMatches(currentUri, isrc) : { dups: [], others: [] };
         const effLiked = isLiked;
-        const partial = !effLiked && matches.others.length > 0;
-        // Liked before Spotify changed this song's ID: the old like is hidden, so flag it.
-        const leftover = !effLiked && !partial && matches.dups.length > 0;
+        // "!": you liked this song, but the copy you liked is lost (no longer on Spotify); this copy can replace it.
+        const lostMatches = !isLiked ? lostMatchesFor(currentUri, isrc, readMetaCache(currentUri)) : [];
+        const leftover = lostMatches.length > 0;
+        // Half-heart: you've liked another copy (same album) or another version of this recording.
+        const partial = !effLiked && !leftover && (matches.dups.length > 0 || matches.others.length > 0);
+        const isLostCopy = isLiked && lostLiked.has(currentUri);
 
         Spicetify.React.useEffect(() => {
-            if (isLiked || !hasISRCLiked || !currentUri.startsWith("spotify:track:") || readMetaCache(currentUri)) return;
+            // Title/album/artist are needed to tell copies from versions, and to spot lost songs.
+            if (isLiked || !(hasISRCLiked || lostLiked.size) || !currentUri.startsWith("spotify:track:") || readMetaCache(currentUri)) return;
             let cancelled = false;
             resolveTrackMeta(currentUri)
                 .then(meta => { if (meta && !cancelled) setMetaTick(t => t + 1); })
@@ -503,8 +595,10 @@ refreshLikedTracks();
         Spicetify.React.useEffect(() => {
             // syncToLiveTrack (not stale currentUri/isrc) so a row recycled to a
             // different track self-corrects on the next liked-list change.
-            document.addEventListener('likedTracksChange', syncToLiveTrack);
-            return () => document.removeEventListener('likedTracksChange', syncToLiveTrack);
+            // Also re-render: the lost-songs list may have changed even if this row's own state didn't.
+            const onChange = () => { syncToLiveTrack(); setMetaTick(t => t + 1); };
+            document.addEventListener('likedTracksChange', onChange);
+            return () => document.removeEventListener('likedTracksChange', onChange);
         }, []);
 
         const isProcessingClick = Spicetify.React.useRef(false);
@@ -520,9 +614,10 @@ refreshLikedTracks();
             const liveIsLiked = likedTrackUris.has(liveUri);
             const removeUris = targetUris;
             // The other copy you liked (only unliked if the option is on).
-            const leftoverUris = UNLIKE_OTHER_COPY_WHEN_LIKING && !liveIsLiked && targetUris.length === 1
-                ? likedMatches(liveUri, readIsrcCache(liveUri)).dups.map(d => d.uri)
-                : [];
+            const leftoverUris = !liveIsLiked && targetUris.length === 1 ? [
+                ...(UNLIKE_OTHER_COPY_WHEN_LIKING ? likedMatches(liveUri, readIsrcCache(liveUri)).dups.map(d => d.uri) : []),
+                ...(UNLIKE_LOST_COPY_WHEN_LIKING ? lostMatchesFor(liveUri, readIsrcCache(liveUri), readMetaCache(liveUri)).map(l => l.uri) : [])
+            ] : [];
 
             // Spotify shows its own "Added to / Removed from Liked Songs" toast; ours would duplicate it.
             if (SHOW_OWN_TOASTS) Spicetify.showNotification(
@@ -535,12 +630,14 @@ refreshLikedTracks();
                 if (liveIsLiked) {
                     await Spicetify.Platform.LibraryAPI.remove({ uris: removeUris });
                     removeUris.forEach(target => {
+                        lostLiked.delete(target);
                         likedTrackUris.delete(target);
                         likedIsrcByUri.delete(target);
                         pendingLikeAdds.delete(target);
                         pendingLikeRemoves.add(target);
                     });
                     likedIsrcs = new Set(likedIsrcByUri.values());
+                    indexLostLikes();
                 } else {
                     const nonLocalTargets = targetUris.filter(target => !target.startsWith("spotify:local:"));
                     const isrcByUri = nonLocalTargets.length ? await resolveIsrcs(nonLocalTargets) : new Map();
@@ -548,6 +645,7 @@ refreshLikedTracks();
                     if (leftoverUris.length) {
                         await Spicetify.Platform.LibraryAPI.remove({ uris: leftoverUris });
                         leftoverUris.forEach(target => {
+                            lostLiked.delete(target);
                             likedTrackUris.delete(target);
                             likedIsrcByUri.delete(target);
                             pendingLikeRemoves.add(target);
@@ -561,6 +659,7 @@ refreshLikedTracks();
                         pendingLikeAdds.set(target, resolvedIsrc ?? null);
                     });
                     likedIsrcs = new Set(likedIsrcByUri.values());
+                    if (leftoverUris.length) indexLostLikes();
                 }
                 document.dispatchEvent(likedTracksChangeEvent);
 
@@ -607,17 +706,21 @@ refreshLikedTracks();
             } else if (tip.parentElement !== document.body || tip !== document.body.lastElementChild) {
                 document.body.appendChild(tip); // keep it last so it paints on top
             }
-            if (effLiked) {
+            if (isLostCopy) {
+                tip.textContent = "Remove from Liked Songs\nThis copy is no longer available on Spotify.";
+            } else if (effLiked) {
                 tip.textContent = "Remove from Liked Songs";
             } else if (partial) {
-                const others = matches.others;
-                const shown = others.slice(0, 5).map(v => "\u2022 " + describeVersion(v));
-                if (others.length > 5) shown.push(`\u2022 \u2026and ${others.length - 5} more`);
-                tip.textContent = "Add to Liked Songs\nYou already like another version of this recording:\n"
-                    + shown.join("\n") + "\nRight-click the song \u2192 Show liked versions to open one";
+                const list = vs => vs.slice(0, 5).map(v => "\u2022 " + describeVersion(v)).join("\n")
+                    + (vs.length > 5 ? `\n\u2022 \u2026and ${vs.length - 5} more` : "");
+                tip.textContent = "Add to Liked Songs"
+                    + (matches.dups.length ? "\nYou've liked another copy of this song (same album):\n" + list(matches.dups) : "")
+                    + (matches.others.length ? "\nYou already like another version of this recording:\n" + list(matches.others) : "")
+                    + "\nRight-click the song \u2192 Show liked versions to open one";
             } else if (leftover) {
-                tip.textContent = "You've liked this song from another copy of the same album, so Spotify shows this copy as not liked."
-                    + "\nClick to like this copy too" + (UNLIKE_OTHER_COPY_WHEN_LIKING ? " (the other copy will be unliked)." : ".");
+                tip.textContent = "You liked this song, but the copy you liked is no longer available on Spotify:\n"
+                    + lostMatches.slice(0, 3).map(v => "\u2022 " + describeVersion(v)).join("\n")
+                    + "\nClick to like this copy instead" + (UNLIKE_LOST_COPY_WHEN_LIKING ? " (the unavailable one will be unliked)." : ".");
             } else {
                 tip.textContent = "Add to Liked Songs";
             }
@@ -651,7 +754,7 @@ refreshLikedTracks();
                 window.removeEventListener("scroll", hide, true);
                 window.removeEventListener("resize", hide);
             };
-        }, [showTooltip, effLiked, partial, leftover, currentUri, isrc, matches.others.length]);
+        }, [showTooltip, effLiked, partial, leftover, isLostCopy, currentUri, isrc, matches.others.length, matches.dups.length, lostMatches.length]);
 
 
         const state = effLiked ? "liked" : partial ? "partial" : leftover ? "leftover" : "none";
@@ -1110,6 +1213,118 @@ refreshLikedTracks();
                 && otherLikedVersions(uris[0], readIsrcCache(uris[0])).length > 0,
             "heart"
         ).register();
+    })();
+
+    // ---- Profile menu -> "Lost liked songs" ----
+    // Liked songs Spotify no longer plays, with a Search button to find an available copy and Unlike to clear them.
+    async function refreshLostNow() {
+        const items = (await Spicetify.Platform.LibraryAPI.getTracks({ limit: 9999999 }))?.items || [];
+        lostCheckKey = ""; // always a fresh read when you open the list
+        for (const item of items) likedInfoByUri.set(item.uri, trackInfoFromItem(item)); // include songs liked since the last refresh
+        const lost = await fetchLostLikes(new Set(items.map(i => i.uri)));
+        if (!lost) return false;
+        lostLiked = lost;
+        for (const uri of lost.keys()) likedTrackUris.add(uri);
+        await resolveIsrcs([...lost.keys()]).catch(() => { });
+        indexLostLikes();
+        document.dispatchEvent(likedTracksChangeEvent);
+        return true;
+    }
+
+    // Available liked copies that already replace a lost song.
+    function likedReplacements(lost) {
+        const isrc = readIsrcCache(lost.uri), key = songKey(lost.name, lost.artist), out = [];
+        for (const [uri, info] of likedInfoByUri) {
+            if (uri === lost.uri || lostLiked.has(uri) || !likedTrackUris.has(uri)) continue;
+            if ((isrc && (likedIsrcByUri.get(uri) || readIsrcCache(uri)) === isrc) || (key && songKey(info.name, info.artist) === key)) out.push({ uri, ...info });
+        }
+        return out;
+    }
+
+    async function showLostSongs() {
+        const box = document.createElement("div");
+        box.style.cssText = "display:flex;flex-direction:column;gap:8px;min-width:420px";
+        const status = document.createElement("div");
+        status.style.cssText = "opacity:.7";
+        status.textContent = "Checking your Liked Songs\u2026";
+        const list = document.createElement("div");
+        list.style.cssText = "display:flex;flex-direction:column;gap:6px";
+        box.append(status, list);
+        Spicetify.PopupModal.display({ title: "Lost liked songs", content: box, isLarge: true });
+
+        try {
+            if (!(await refreshLostNow())) { status.textContent = "Couldn't read your Liked Songs list in this Spotify version."; return; }
+        } catch (error) {
+            console.error("[Old Like Button] Failed to check for lost songs", error);
+            status.textContent = "Couldn't check for lost songs (see the console).";
+            return;
+        }
+        const render = () => {
+            list.replaceChildren();
+            const lost = [...lostLiked.values()].sort((a, b) => (a.artist + a.name).localeCompare(b.artist + b.name));
+            status.textContent = lost.length
+                ? `${lost.length} liked song${lost.length === 1 ? " is" : "s are"} no longer available on Spotify. An available copy of any of them gets an orange "!" heart.`
+                : "No lost songs: every liked song is still available.";
+            for (const l of lost) {
+                const row = document.createElement("div");
+                row.style.cssText = "display:flex;align-items:center;gap:12px;padding:8px 10px;border-radius:6px;background:rgba(255,255,255,.07)";
+                const text = document.createElement("div");
+                text.style.cssText = "flex:1;min-width:0;display:flex;flex-direction:column";
+                const title = document.createElement("span");
+                title.style.cssText = "font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+                title.textContent = l.name || l.uri;
+                const meta = document.createElement("span");
+                meta.style.cssText = "font-size:12px;opacity:.65;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+                meta.textContent = [l.artists, l.album].filter(Boolean).join(" \u00b7 ");
+                text.append(title, meta);
+                const repl = likedReplacements(l);
+                if (repl.length) {
+                    const ok = document.createElement("span");
+                    ok.style.cssText = "font-size:12px;color:var(--text-bright-accent, #1ed760)";
+                    ok.textContent = "\u2713 You've liked an available copy" + (repl[0].album ? ` (${repl[0].album})` : "");
+                    text.append(ok);
+                }
+                const mkBtn = (label, onClick) => {
+                    const b = document.createElement("button");
+                    b.textContent = label;
+                    b.style.cssText = "all:unset;cursor:pointer;padding:6px 12px;border-radius:999px;border:1px solid rgba(255,255,255,.3);font-size:13px;white-space:nowrap";
+                    b.onclick = onClick;
+                    return b;
+                };
+                const search = mkBtn("Search", () => {
+                    Spicetify.PopupModal.hide();
+                    Spicetify.Platform.History.push("/search/" + encodeURIComponent([l.name, l.artist].filter(Boolean).join(" ")));
+                });
+                const unlike = mkBtn("Unlike", async () => {
+                    unlike.textContent = "\u2026";
+                    try {
+                        await Spicetify.Platform.LibraryAPI.remove({ uris: [l.uri] });
+                        lostLiked.delete(l.uri);
+                        likedTrackUris.delete(l.uri);
+                        pendingLikeRemoves.add(l.uri);
+                        indexLostLikes();
+                        document.dispatchEvent(likedTracksChangeEvent);
+                        render();
+                    } catch (error) {
+                        console.error("[Old Like Button] Failed to unlike a lost song", error);
+                        unlike.textContent = "Unlike";
+                        Spicetify.showNotification("Could not unlike that song, please try again", true);
+                    }
+                });
+                row.append(text, search, unlike);
+                list.append(row);
+            }
+        };
+        render();
+    }
+
+    (function registerProfileMenu(tries = 0) {
+        if (!(Spicetify.Menu?.Item && Spicetify.PopupModal)) {
+            if (tries < 100) setTimeout(() => registerProfileMenu(tries + 1), 300);
+            else console.warn("[Old Like Button] Profile menu not available; the lost songs list can't be added there.");
+            return;
+        }
+        new Spicetify.Menu.Item("Lost liked songs", false, () => showLostSongs(), "heart").register();
     })();
 
     // characterData too: a reused row may only change its text, which childList misses.

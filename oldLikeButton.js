@@ -73,7 +73,7 @@ function readIsrcCache(uri) {
     try {
         return localStorage.getItem(ISRC_STORAGE_PREFIX + uri.replace("spotify:track:", ""));
     } catch (error) {
-        console.error("[Old Like Button Revamped] localStorage read failed", error);
+        console.error("[Old Like Button] localStorage read failed", error);
         return null;
     }
 }
@@ -82,7 +82,7 @@ function writeIsrcCache(uri, isrc) {
     try {
         localStorage.setItem(ISRC_STORAGE_PREFIX + uri.replace("spotify:track:", ""), isrc);
     } catch (error) {
-        console.error("[Old Like Button Revamped] localStorage write failed", error);
+        console.error("[Old Like Button] localStorage write failed", error);
     }
 }
 
@@ -150,7 +150,7 @@ function fetchTrackMetadataBytes(uris) {
             if (settled) return;
             settled = true;
             reject(new Error("metadata service request timed out"));
-            try { cancel.cancel(); } catch (e) { console.error("[Old Like Button Revamped] cancel() after timeout failed", e); }
+            try { cancel.cancel(); } catch (e) { console.error("[Old Like Button] cancel() after timeout failed", e); }
         }, 8000);
         const cancel = service.instance.observe(
             service.descriptor.METHODS.observe.requestType.fromPartial({
@@ -160,7 +160,7 @@ function fetchTrackMetadataBytes(uris) {
                 if (response.pendingResponse || settled) return;
                 settled = true;
                 clearTimeout(timer);
-                try { cancel.cancel(); } catch (e) { console.error("[Old Like Button Revamped] cancel() after response failed", e); }
+                try { cancel.cancel(); } catch (e) { console.error("[Old Like Button] cancel() after response failed", e); }
                 // An uncaught throw here would leave this promise settled=true
                 // but never resolved/rejected, hanging every batch behind it.
                 try {
@@ -332,7 +332,7 @@ async function resolveIsrcs(uris, concurrency = 8) {
             try {
                 entries = await fetchTrackMetadataBytes(batch);
             } catch (error) {
-                console.error("[Old Like Button Revamped] Failed to fetch ISRC batch", error);
+                console.error("[Old Like Button] Failed to fetch ISRC batch", error);
                 continue;
             }
             for (const entry of entries) {
@@ -387,7 +387,7 @@ async function refreshLikedTracks() {
         likedIsrcByUri = isrcByUri;
         likedIsrcs = new Set(likedIsrcByUri.values());
     } catch (error) {
-        console.error("[Old Like Button Revamped] Failed to fetch Liked Songs", error);
+        console.error("[Old Like Button] Failed to fetch Liked Songs", error);
     }
     document.dispatchEvent(likedTracksChangeEvent);
     setTimeout(refreshLikedTracks, 30000);
@@ -424,8 +424,6 @@ refreshLikedTracks();
             .oldlike-btn[data-variant="compact"]{margin:0 8px 0 0}
             .oldlike-btn[data-variant="inline"]{margin:0 12px 0 0}
             .oldlike-inline{display:flex;align-items:center;flex-shrink:0}
-            .oldlike-card{position:absolute;z-index:2;align-items:center}
-            .oldlike-btn[data-variant="card"]{margin:0}
             .oldlike-playbar{display:flex;align-items:center}
             ${SHOW_EMPTY_HEARTS_ALWAYS ? "" : `
             .oldlike-btn[data-variant="row"][data-state="none"],.oldlike-btn[data-variant="compact"][data-state="none"]{opacity:0}
@@ -573,7 +571,7 @@ refreshLikedTracks();
                     restoreSelection(selection);
                 }
             } catch (error) {
-                console.error("[Old Like Button Revamped] Failed to update Liked Songs", error);
+                console.error("[Old Like Button] Failed to update Liked Songs", error);
                 Spicetify.showNotification("Could not update Liked Songs, please try again", true);
             } finally {
                 isProcessingClick.current = false;
@@ -737,7 +735,6 @@ refreshLikedTracks();
         const tick = findPlaybarTick(widget);
         const uri = getPlayingUri();
 
-        // No tick, or a podcast/ad: take the heart away.
         // Podcast/ad: no heart.
         if (!/^spotify:(track|local):/.test(uri)) {
             if (currentPlaybarContainer?.isConnected) currentPlaybarContainer.remove();
@@ -773,7 +770,6 @@ refreshLikedTracks();
 
 
     // ---- Track rows (playlists, albums, artist pages, search, queue, ...) ----
-    // Main view button insertion
     function findUriFromFiber(domNode, maxDepth = 15) {
         // The row's own uri is a direct prop a few fiber ancestors up, not in its children.
         const fiberKey = Object.keys(domNode).find(key => key.startsWith("__reactFiber$"));
@@ -860,7 +856,7 @@ refreshLikedTracks();
                 selection.api.clearSelected();
             }
         } catch (error) {
-            console.error("[Old Like Button Revamped] Failed to restore selection", error);
+            console.error("[Old Like Button] Failed to restore selection", error);
         }
     }
 
@@ -868,13 +864,12 @@ refreshLikedTracks();
         if (!(node instanceof Element)) return;
         const wrappers = node.matches(".likeControl-wrapper") ? [node] : [...node.querySelectorAll(".likeControl-wrapper")];
         wrappers.forEach(wrapper => {
-            // waitForWidgetMounted owns this one; unmounting it here raced its
-            // own re-render on every song change and wiped the button out.
+            // The now-playing bar's heart is moved around, not recreated; never unmount it here.
             if (wrapper === currentPlaybarContainer) return;
             try {
                 Spicetify.ReactDOM.unmountComponentAtNode(wrapper);
             } catch (error) {
-                console.error("[Old Like Button Revamped] Failed to unmount a row button", error);
+                console.error("[Old Like Button] Failed to unmount a row button", error);
             }
         });
     }
@@ -986,7 +981,7 @@ refreshLikedTracks();
                     );
                 }
             } catch (error) {
-                console.error("[Old Like Button Revamped] Failed to attach a row button", error);
+                console.error("[Old Like Button] Failed to attach a row button", error);
             }
         });
     }
@@ -1004,7 +999,6 @@ refreshLikedTracks();
         document.querySelectorAll("button[aria-label]").forEach(btn => {
             try {
                 if (!isCurationButton(btn) || playbar?.contains(btn) || !btn.getClientRects().length) return;
-                if (btn.closest(".oldlike-card-host")) return; // song card: its heart sits by the play button
                 // Rows the main logic already handles (track lists, queue) have their heart already.
                 const rowLike = btn.closest('[role="row"], [data-encore-id="listRow"]');
                 if (rowLike && [...rowLike.querySelectorAll(".oldlike-btn")].some(h => !h.closest(".oldlike-inline"))) return;
@@ -1042,71 +1036,10 @@ refreshLikedTracks();
         document.querySelectorAll(".oldlike-inline").forEach(w => {
             const next = w.nextElementSibling;
             const stillThere = next && (next.matches("button") ? isCurationButton(next) : [...next.querySelectorAll("button[aria-label]")].some(isCurationButton));
-            if (!stillThere || w.closest(".oldlike-card-host")) {
+            if (!stillThere) {
                 try { Spicetify.ReactDOM.unmountComponentAtNode(w); } catch { }
                 w.remove();
             }
-        });
-    }
-
-    // Search "top result" card: no "+" / tick to anchor to, so the heart sits just left of
-    // the card's green play button, positioned to it (the button may float/animate).
-    function findSongCards() {
-        const cards = new Map(); // card element -> play button
-        document.querySelectorAll('[data-testid="play-button"], button[aria-label^="Play "]').forEach(play => {
-            if (play.closest('[role="row"], [data-encore-id="listRow"], [role="grid"], .likeControl-wrapper')) return;
-            if (findPlaybarWidget()?.contains(play) || play.closest('[data-testid="now-playing-bar"], [data-testid="player-controls"]')) return;
-            const explicit = play.closest('[data-testid="top-result-card"]');
-            let card = explicit;
-            if (!card) {
-                // The nearest ancestor that belongs to a single song (its component has a track uri).
-                for (let el = play.parentElement, i = 0; el && i < 8; el = el.parentElement, i++) {
-                    if (el.matches('main, [role="main"], section, [data-testid="search-category-card-container"]')) break;
-                    if (findUriFromFiber(el, 4)) { card = el; break; }
-                }
-            }
-            if (card && !cards.has(card)) cards.set(card, play);
-        });
-        return cards;
-    }
-
-    function ensureCardButtons() {
-        const cards = findSongCards();
-        for (const [card, play] of cards) {
-            try {
-                const uri = findUriFromFiber(card, 25) || findUriFromFiber(play, 25);
-                if (!uri) continue;
-                card.classList.add("oldlike-card-host");
-                const host = play.offsetParent || card;
-                let wrapper = host.querySelector(":scope > .oldlike-card");
-                if (!wrapper) {
-                    wrapper = document.createElement("div");
-                    wrapper.className = "likeControl-wrapper oldlike-card";
-                    ["click", "mousedown", "pointerdown", "mouseup", "pointerup", "dblclick"].forEach(type =>
-                        wrapper.addEventListener(type, e => e.stopPropagation()));
-                    host.appendChild(wrapper);
-                }
-                const p = play.getBoundingClientRect(), h = host.getBoundingClientRect();
-                if (!p.width || !p.height) { wrapper.style.display = "none"; continue; }
-                wrapper.style.display = "flex";
-                wrapper.style.right = Math.round(h.right - p.left + 16) + "px";
-                wrapper.style.top = Math.round(p.top - h.top + p.height / 2 - 8) + "px";
-                if (wrapper.dataset.uri !== uri) {
-                    wrapper.dataset.uri = uri;
-                    Spicetify.ReactDOM.render(
-                        Spicetify.React.createElement(LikeButton, { uri, key: uri, getUri: () => findUriFromFiber(card, 25) || uri, variant: "card" }),
-                        wrapper
-                    );
-                }
-            } catch (error) {
-                console.error("[Old Like Button] Failed to attach a heart to a song card", error);
-            }
-        }
-        // Remove card hearts whose card is gone.
-        document.querySelectorAll(".oldlike-card").forEach(w => {
-            const host = w.parentElement;
-            const owner = [...cards.entries()].find(([card, play]) => (play.offsetParent || card) === host);
-            if (!owner) { try { Spicetify.ReactDOM.unmountComponentAtNode(w); } catch { } w.remove(); }
         });
     }
 
@@ -1117,9 +1050,8 @@ refreshLikedTracks();
         requestAnimationFrame(() => {
             scanQueued = false;
             ensureRowButtons();
-            try { ensureCardButtons(); } catch (error) { console.error("[Old Like Button] Card hearts failed", error); }
             try { ensureInlineButtons(); } catch (error) { console.error("[Old Like Button] Inline hearts failed", error); }
-            try { ensurePlaybarButton(); } catch (error) { console.error("[Old Like Button Revamped] Playbar button failed", error); }
+            try { ensurePlaybarButton(); } catch (error) { console.error("[Old Like Button] Playbar button failed", error); }
         });
     }
 

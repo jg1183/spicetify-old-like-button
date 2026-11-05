@@ -1,16 +1,17 @@
 // NAME: Old Like Button
 // DESCRIPTION: Adds the classic heart to the left of the "+"/tick on every track row (playlists, albums,
-// artist pages, search, queue) and in the now-playing bar. Liked hearts are always visible.
+// artist pages, search results and suggestions, queue) and in the now-playing bar. Liked hearts are always visible.
 // Inspired by and improved from: Old Like Button Revamped by K4HVH (https://github.com/K4HVH/spicetify-old-like-button-revamped),
 // itself based on work by Maskowh and OhItsTom. Original code MIT licensed: Copyright (c) 2026 K4HVH,
 // portions copyright (c) Maskowh, OhItsTom.
 
 // true = show empty hearts on every row all the time; false = empty hearts only on hover (like Spotify's "+").
 const SHOW_EMPTY_HEARTS_ALWAYS = false;
-// Leftover likes: when Spotify gives a song a new ID (e.g. album re-uploaded), your old like stays on the
-// old ID and Spotify stops showing it. Those get an outline heart with an orange "!" (always visible).
-// true = also delete the hidden leftover when you like the current copy, to tidy your Liked Songs.
-const REMOVE_LEFTOVER_LIKES_WHEN_LIKING = false;
+// Other copies: Spotify often has the same album under several IDs (re-releases, regional copies).
+// If you liked the song from a different copy than the one you're looking at, Spotify shows it as not
+// liked; the heart shows an outline with an orange "!" instead (always visible).
+// true = when you like this copy, unlike the other copy, so each song is only liked once.
+const UNLIKE_OTHER_COPY_WHEN_LIKING = false;
 // Spotify already shows its own toast when you like/unlike; set true only if yours doesn't.
 const SHOW_OWN_TOASTS = false;
 
@@ -29,8 +30,8 @@ function trackInfoFromItem(item) {
     };
 }
 
-// Liked tracks sharing this ISRC, split into leftovers of this same release under an old
-// ID (ignored, as Spotify does) and genuinely different versions (half-heart).
+// Liked tracks sharing this ISRC, split into other copies of this same release (same album under
+// another ID: "!" heart) and genuinely different versions (half-heart).
 function likedMatches(uri, isrc) {
     const dups = [], others = [];
     if (!isrc) return { dups, others };
@@ -53,7 +54,7 @@ function describeVersion(v) {
 }
 const likedTracksChangeEvent = new CustomEvent('likedTracksChange');
 
-// Outline heart with an orange "!" badge, for leftover likes (24x24 viewBox).
+// Outline heart with an orange "!" badge: liked from another copy of the same album (24x24 viewBox).
 const LEFTOVER_ICON =
     `<path d="M12 20.3C5.6 14.8 3 11.9 3 8.6 3 6 5 4 7.5 4c1.8 0 3.4 1 4.5 2.6C13.1 5 14.7 4 16.5 4 19 4 21 6 21 8.6c0 1.2-.3 2.3-1 3.5" style="fill:none;stroke:var(--text-subdued, #b3b3b3);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round"></path>`
     + `<circle cx="18" cy="17.5" r="5.5" style="fill:var(--text-warning, #ffa42b)"></circle>`
@@ -300,7 +301,7 @@ async function resolveTrackMeta(uri) {
 
 const normText = s => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
 // Same recording + same title + same album name = the same release under an old/other ID
-// (a leftover like Spotify no longer shows), not a different version.
+// (another copy of the same album), not a different version.
 function isSameRelease(meta, info) {
     return !!(meta && info && meta.name && info.name
         && normText(meta.name) === normText(info.name)
@@ -424,7 +425,8 @@ refreshLikedTracks();
             .oldlike-playbar{display:flex;align-items:center}
             ${SHOW_EMPTY_HEARTS_ALWAYS ? "" : `
             .oldlike-btn[data-variant="row"][data-state="none"],.oldlike-btn[data-variant="compact"][data-state="none"]{opacity:0}
-            [role="row"]:hover .oldlike-btn,[role="row"]:focus-within .oldlike-btn,[role="row"][aria-selected="true"] .oldlike-btn{opacity:1}`}
+            [role="row"]:hover .oldlike-btn,[role="row"]:focus-within .oldlike-btn,[role="row"][aria-selected="true"] .oldlike-btn,
+            [data-encore-id="listRow"]:hover .oldlike-btn,[data-encore-id="listRow"]:focus-within .oldlike-btn{opacity:1}`}
         `;
         document.head.appendChild(style);
     }
@@ -451,8 +453,7 @@ refreshLikedTracks();
         const showTooltipTimeout = Spicetify.React.useRef(null);
         const [, setMetaTick] = Spicetify.React.useState(0);
 
-        // Leftover likes of this same release under an old ID are ignored (Spotify hides them);
-        // only genuinely different versions give a half-heart.
+        // Liked from another copy of the same album -> "!" heart; genuinely different versions -> half-heart.
         const matches = (!isLiked && hasISRCLiked) ? likedMatches(currentUri, isrc) : { dups: [], others: [] };
         const effLiked = isLiked;
         const partial = !effLiked && matches.others.length > 0;
@@ -516,8 +517,8 @@ refreshLikedTracks();
             const targetUris = selectedUris && selectedUris.includes(liveUri) ? selectedUris : [liveUri];
             const liveIsLiked = likedTrackUris.has(liveUri);
             const removeUris = targetUris;
-            // Hidden leftover likes of this same song under an old ID (only used if the option is on).
-            const leftoverUris = REMOVE_LEFTOVER_LIKES_WHEN_LIKING && !liveIsLiked && targetUris.length === 1
+            // The other copy you liked (only unliked if the option is on).
+            const leftoverUris = UNLIKE_OTHER_COPY_WHEN_LIKING && !liveIsLiked && targetUris.length === 1
                 ? likedMatches(liveUri, readIsrcCache(liveUri)).dups.map(d => d.uri)
                 : [];
 
@@ -613,8 +614,8 @@ refreshLikedTracks();
                 tip.textContent = "Add to Liked Songs\nYou already like another version of this recording:\n"
                     + shown.join("\n") + "\nRight-click the song \u2192 Show liked versions to open one";
             } else if (leftover) {
-                tip.textContent = "You liked this song before Spotify changed its ID, so it no longer shows as liked."
-                    + "\nClick to like it again" + (REMOVE_LEFTOVER_LIKES_WHEN_LIKING ? " (the hidden old copy will be removed)." : ".");
+                tip.textContent = "You've liked this song from another copy of the same album, so Spotify shows this copy as not liked."
+                    + "\nClick to like this copy too" + (UNLIKE_OTHER_COPY_WHEN_LIKING ? " (the other copy will be unliked)." : ".");
             } else {
                 tip.textContent = "Add to Liked Songs";
             }
@@ -878,9 +879,17 @@ refreshLikedTracks();
     // Runs whenever the page changes, so it also covers rows that are reused while
     // scrolling and buttons that only appear on hover.
     function ensureRowButtons() {
-        document.querySelectorAll('[role="row"]').forEach(row => {
+        // Normal track rows, plus compact list rows (queue, search results, search suggestions)
+        // which aren't always inside a role="row" element.
+        const seenRows = new Set();
+        document.querySelectorAll('[role="row"], [data-encore-id="listRow"]').forEach(el => {
+            const row = el.matches('[data-encore-id="listRow"]') ? (el.closest('[role="row"]') || el) : el;
+            if (seenRows.has(row)) return;
+            seenRows.add(row);
             try {
-                const uri = findUriFromFiber(row);
+                const listRowEl = row.matches('[data-encore-id="listRow"]') ? row : row.querySelector('[data-encore-id="listRow"]');
+                const uri = findUriFromFiber(row)
+                    || (listRowEl && (findUriFromFiber(listRowEl) || [...listRowEl.children].map(c => findUriFromFiber(c)).find(Boolean)));
                 if (!uri) return;
 
                 const removeStray = scope => {
@@ -893,22 +902,30 @@ refreshLikedTracks();
                 // Where the heart goes: a container, the node to insert before, and a style variant.
                 let container = null, before = null, variant = "row";
 
-                const listRow = row.querySelector('[data-encore-id="listRow"]');
+                const listRow = listRowEl;
                 if (listRow) {
                     // Compact list rows (the queue, side panels): put the heart in the right-hand
                     // slot, just left of the "..." button, so the title/artist text isn't pushed around.
                     const slot = listRow.querySelector('[class*="list-row__slot"]');
                     // The "..." button: any button in the slot that isn't our own heart.
                     const moreButton = slot ? [...slot.querySelectorAll("button")].find(btn => !btn.closest(".likeControl-wrapper")) : null;
-                    // Clean up hearts an older version put next to the title.
-                    [...listRow.querySelectorAll(".likeControl-wrapper")].filter(w => !slot?.contains(w)).forEach(w => {
+                    if (slot && moreButton) {
+                        container = moreButton.parentElement;
+                        before = moreButton;
+                    } else {
+                        // No "..." button (e.g. search suggestions): put the heart at the right-hand end
+                        // of the row; the title column shrinks a little instead of moving.
+                        const header = [...listRow.querySelectorAll('[class*="list-row__header"]')]
+                            .find(h => !/header-side/.test(h.className)) || listRow;
+                        container = header;
+                        before = null;
+                    }
+                    variant = "compact";
+                    // Clean up hearts anywhere else in this row (e.g. an older version's, next to the title).
+                    [...listRow.querySelectorAll(".likeControl-wrapper")].filter(w => w.parentElement !== container).forEach(w => {
                         try { Spicetify.ReactDOM.unmountComponentAtNode(w); } catch { }
                         w.remove();
                     });
-                    if (!slot || !moreButton) return;
-                    container = moreButton.parentElement;
-                    before = moreButton;
-                    variant = "compact";
                 } else {
                     const cells = row.querySelectorAll('[role="gridcell"]');
                     const cell = cells[cells.length - 1] || row.firstElementChild?.lastElementChild;

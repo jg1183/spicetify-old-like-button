@@ -424,6 +424,8 @@ refreshLikedTracks();
             .oldlike-btn[data-variant="compact"]{margin:0 8px 0 0}
             .oldlike-btn[data-variant="inline"]{margin:0 12px 0 0}
             .oldlike-inline{display:flex;align-items:center;flex-shrink:0}
+            .oldlike-card{position:absolute;z-index:2;align-items:center}
+            .oldlike-btn[data-variant="card"]{margin:0}
             .oldlike-playbar{display:flex;align-items:center}
             ${SHOW_EMPTY_HEARTS_ALWAYS ? "" : `
             .oldlike-btn[data-variant="row"][data-state="none"],.oldlike-btn[data-variant="compact"][data-state="none"]{opacity:0}
@@ -890,8 +892,14 @@ refreshLikedTracks();
             seenRows.add(row);
             try {
                 const listRowEl = row.matches('[data-encore-id="listRow"]') ? row : row.querySelector('[data-encore-id="listRow"]');
+                // Spotify's own "+" / tick in a compact row: either a "save-button" cell (may be hidden
+                // until hover, e.g. the search top result) or a visible "Add to..." button.
+                const saveCell = listRowEl?.querySelector('[data-testid="save-button"]');
+                const curationBtn = listRowEl ? [...listRowEl.querySelectorAll("button[aria-label]")].find(isCurationButton) : null;
                 const uri = findUriFromFiber(row)
-                    || (listRowEl && (findUriFromFiber(listRowEl) || [...listRowEl.children].map(c => findUriFromFiber(c)).find(Boolean)));
+                    || (listRowEl && (findUriFromFiber(listRowEl) || [...listRowEl.children].map(c => findUriFromFiber(c)).find(Boolean)))
+                    || (saveCell && (saveCell.querySelector("button") ? findUriFromFiber(saveCell.querySelector("button"), 25) : findUriFromFiber(saveCell, 25)))
+                    || (curationBtn && findUriFromFiber(curationBtn, 25));
                 if (!uri) return;
 
                 const removeStray = scope => {
@@ -911,7 +919,17 @@ refreshLikedTracks();
                     const slot = listRow.querySelector('[class*="list-row__slot"]');
                     // The "..." button: any button in the slot that isn't our own heart.
                     const moreButton = slot ? [...slot.querySelectorAll("button")].find(btn => !btn.closest(".likeControl-wrapper")) : null;
-                    if (slot && moreButton) {
+                    if (saveCell || curationBtn) {
+                        // Search results / top result: directly left of Spotify's "+" / tick (or of the
+                        // play button while the tick is hidden). Always visible, like Spotify's "+".
+                        let anchor = saveCell || curationBtn;
+                        // Spotify sometimes wraps the button in a single-child box; sit left of that box.
+                        while (anchor === curationBtn && anchor.parentElement && anchor.parentElement.childElementCount === 1
+                            && !anchor.parentElement.matches('[class*="list-row__slot"]')) anchor = anchor.parentElement;
+                        container = anchor.parentElement;
+                        before = anchor;
+                        variant = "inline";
+                    } else if (slot && moreButton) {
                         container = moreButton.parentElement;
                         before = moreButton;
                     } else {
@@ -922,9 +940,9 @@ refreshLikedTracks();
                         container = header;
                         before = null;
                     }
-                    variant = "compact";
+                    if (variant !== "inline") variant = "compact";
                     // Clean up hearts anywhere else in this row (e.g. an older version's, next to the title).
-                    [...listRow.querySelectorAll(".likeControl-wrapper")].filter(w => w.parentElement !== container).forEach(w => {
+                    [...listRow.querySelectorAll(".likeControl-wrapper")].filter(w => w.parentElement !== container || w.classList.contains("oldlike-inline")).forEach(w => {
                         try { Spicetify.ReactDOM.unmountComponentAtNode(w); } catch { }
                         w.remove();
                     });
@@ -942,11 +960,16 @@ refreshLikedTracks();
                     before = cell.firstChild;
                 }
 
-                let wrapper = container.querySelector(":scope > .likeControl-wrapper");
+                let wrapper = container.querySelector(":scope > .likeControl-wrapper:not(.oldlike-inline)");
                 if (!wrapper) {
                     wrapper = document.createElement("div");
                     wrapper.className = "likeControl-wrapper";
                     wrapper.style.display = "contents";
+                    if (listRowEl) {
+                        // Compact rows (queue, search): keep clicks on the heart from also opening/playing the row.
+                        ["click", "mousedown", "pointerdown", "mouseup", "pointerup", "dblclick"].forEach(type =>
+                            wrapper.addEventListener(type, e => e.stopPropagation()));
+                    }
                     container.insertBefore(wrapper, before);
                 }
                 if (wrapper.dataset.uri !== uri) {
@@ -981,6 +1004,7 @@ refreshLikedTracks();
         document.querySelectorAll("button[aria-label]").forEach(btn => {
             try {
                 if (!isCurationButton(btn) || playbar?.contains(btn) || !btn.getClientRects().length) return;
+                if (btn.closest(".oldlike-card-host")) return; // song card: its heart sits by the play button
                 // Rows the main logic already handles (track lists, queue) have their heart already.
                 const rowLike = btn.closest('[role="row"], [data-encore-id="listRow"]');
                 if (rowLike && [...rowLike.querySelectorAll(".oldlike-btn")].some(h => !h.closest(".oldlike-inline"))) return;
@@ -1018,10 +1042,71 @@ refreshLikedTracks();
         document.querySelectorAll(".oldlike-inline").forEach(w => {
             const next = w.nextElementSibling;
             const stillThere = next && (next.matches("button") ? isCurationButton(next) : [...next.querySelectorAll("button[aria-label]")].some(isCurationButton));
-            if (!stillThere) {
+            if (!stillThere || w.closest(".oldlike-card-host")) {
                 try { Spicetify.ReactDOM.unmountComponentAtNode(w); } catch { }
                 w.remove();
             }
+        });
+    }
+
+    // Search "top result" card: no "+" / tick to anchor to, so the heart sits just left of
+    // the card's green play button, positioned to it (the button may float/animate).
+    function findSongCards() {
+        const cards = new Map(); // card element -> play button
+        document.querySelectorAll('[data-testid="play-button"], button[aria-label^="Play "]').forEach(play => {
+            if (play.closest('[role="row"], [data-encore-id="listRow"], [role="grid"], .likeControl-wrapper')) return;
+            if (findPlaybarWidget()?.contains(play) || play.closest('[data-testid="now-playing-bar"], [data-testid="player-controls"]')) return;
+            const explicit = play.closest('[data-testid="top-result-card"]');
+            let card = explicit;
+            if (!card) {
+                // The nearest ancestor that belongs to a single song (its component has a track uri).
+                for (let el = play.parentElement, i = 0; el && i < 8; el = el.parentElement, i++) {
+                    if (el.matches('main, [role="main"], section, [data-testid="search-category-card-container"]')) break;
+                    if (findUriFromFiber(el, 4)) { card = el; break; }
+                }
+            }
+            if (card && !cards.has(card)) cards.set(card, play);
+        });
+        return cards;
+    }
+
+    function ensureCardButtons() {
+        const cards = findSongCards();
+        for (const [card, play] of cards) {
+            try {
+                const uri = findUriFromFiber(card, 25) || findUriFromFiber(play, 25);
+                if (!uri) continue;
+                card.classList.add("oldlike-card-host");
+                const host = play.offsetParent || card;
+                let wrapper = host.querySelector(":scope > .oldlike-card");
+                if (!wrapper) {
+                    wrapper = document.createElement("div");
+                    wrapper.className = "likeControl-wrapper oldlike-card";
+                    ["click", "mousedown", "pointerdown", "mouseup", "pointerup", "dblclick"].forEach(type =>
+                        wrapper.addEventListener(type, e => e.stopPropagation()));
+                    host.appendChild(wrapper);
+                }
+                const p = play.getBoundingClientRect(), h = host.getBoundingClientRect();
+                if (!p.width || !p.height) { wrapper.style.display = "none"; continue; }
+                wrapper.style.display = "flex";
+                wrapper.style.right = Math.round(h.right - p.left + 16) + "px";
+                wrapper.style.top = Math.round(p.top - h.top + p.height / 2 - 8) + "px";
+                if (wrapper.dataset.uri !== uri) {
+                    wrapper.dataset.uri = uri;
+                    Spicetify.ReactDOM.render(
+                        Spicetify.React.createElement(LikeButton, { uri, key: uri, getUri: () => findUriFromFiber(card, 25) || uri, variant: "card" }),
+                        wrapper
+                    );
+                }
+            } catch (error) {
+                console.error("[Old Like Button] Failed to attach a heart to a song card", error);
+            }
+        }
+        // Remove card hearts whose card is gone.
+        document.querySelectorAll(".oldlike-card").forEach(w => {
+            const host = w.parentElement;
+            const owner = [...cards.entries()].find(([card, play]) => (play.offsetParent || card) === host);
+            if (!owner) { try { Spicetify.ReactDOM.unmountComponentAtNode(w); } catch { } w.remove(); }
         });
     }
 
@@ -1032,6 +1117,7 @@ refreshLikedTracks();
         requestAnimationFrame(() => {
             scanQueued = false;
             ensureRowButtons();
+            try { ensureCardButtons(); } catch (error) { console.error("[Old Like Button] Card hearts failed", error); }
             try { ensureInlineButtons(); } catch (error) { console.error("[Old Like Button] Inline hearts failed", error); }
             try { ensurePlaybarButton(); } catch (error) { console.error("[Old Like Button Revamped] Playbar button failed", error); }
         });
